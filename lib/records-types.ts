@@ -1,0 +1,112 @@
+import type { Scope, Membership, Identity } from "./records-domain";
+export type Company = {
+  id: string;
+  name: string;
+  code: string;
+  description: string;
+  closed_through: string | null;
+};
+export type Division = {
+  id: string;
+  company_id: string;
+  name: string;
+  code: string;
+  profile: string;
+  active: number;
+};
+export type Branch = Division & { division_id: string; location: string };
+export type BusinessRecord = Scope & {
+  id: string;
+  number: string;
+  kind: string;
+  title: string;
+  business_date: string;
+  end_date: string | null;
+  amount_minor: number;
+  currency: string;
+  category: string;
+  purpose: string;
+  counterparty: string;
+  source_reference: string;
+  related_id: string | null;
+  counterparty_company_id: string | null;
+  details: string;
+  scope_snapshot: string;
+  no_activity: number;
+  status: string;
+  version: number;
+  created_by: string;
+  created_name: string;
+  created_at: string;
+  updated_at: string;
+  submitted_at: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  supersedes_id: string | null;
+  correction_reason: string | null;
+  evidence_exception: string | null;
+  mutation_id: string;
+  document_count?: number;
+};
+export type Evidence = Scope & {
+  id: string;
+  name: string;
+  document_type: string;
+  document_date: string;
+  reference: string;
+  description: string;
+  physical_location: string;
+  mime_type: string;
+  size: number;
+  sha256: string;
+  uploaded_by: string;
+  uploaded_name: string;
+  created_at: string;
+  record_ids?: string;
+};
+export type AuditEvent = Scope & {
+  id: string;
+  record_id: string | null;
+  action: string;
+  actor_id: string;
+  actor_name: string;
+  reason: string;
+  snapshot: string | null;
+  created_at: string;
+};
+export type Expectation = Scope & {
+  id: string;
+  kind: string;
+  frequency: string;
+  start_date: string;
+  end_date: string | null;
+  active: number;
+};
+export type WorkspaceData = {
+  user: Identity | null;
+  initialized: boolean;
+  memberships: Membership[];
+  companies: Company[];
+  divisions: Division[];
+  branches: Branch[];
+  members: Membership[];
+  expectations: Expectation[];
+  activity: AuditEvent[];
+};
+export type RecordList = {
+  records: BusinessRecord[];
+  total: number;
+  summary: {
+    kind: string;
+    currency: string;
+    amount_minor: number;
+    count: number;
+  }[];
+  pending: number;
+};
+export type RecordDetail = {
+  record: BusinessRecord;
+  documents: Evidence[];
+  history: AuditEvent[];
+  related: BusinessRecord[];
+};

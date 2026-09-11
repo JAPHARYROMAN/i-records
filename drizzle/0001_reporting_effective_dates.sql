@@ -1,0 +1,1 @@
+ALTER TABLE `expectations` ADD `end_date` text;
