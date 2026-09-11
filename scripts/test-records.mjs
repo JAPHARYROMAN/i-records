@@ -7,7 +7,7 @@ import ts from "typescript";
 
 const output = path.resolve(".sites-runtime/domain-tests");
 mkdirSync(output, { recursive: true });
-for (const name of ["records-domain", "records-service"]) {
+for (const name of ["records-domain", "records-service", "document-service"]) {
   const source = readFileSync(`lib/${name}.ts`, "utf8");
   const compiled = ts
     .transpileModule(source, {
@@ -24,6 +24,9 @@ const { RecordsService } = await import(
 );
 const { moneyToMinor, validateRecord, permitted, dateValue, csvCell } =
   await import(pathToFileURL(path.join(output, "records-domain.mjs")));
+const { archiveDocument, readArchivedDocument } = await import(
+  pathToFileURL(path.join(output, "document-service.mjs")),
+);
 class D1Adapter {
   constructor() {
     this.sqlite = new DatabaseSync(":memory:");
@@ -668,6 +671,140 @@ test("evidence cannot cross scope and locks draft ownership", async () => {
     /same company/,
   );
 });
+class ObjectStore {
+  objects = new Map();
+  deleteCalls = 0;
+  getCalls = 0;
+  async put(key, bytes) {
+    this.objects.set(key, new Uint8Array(bytes));
+  }
+  async get(key) {
+    this.getCalls++;
+    const bytes = this.objects.get(key);
+    return bytes ? { body: bytes, arrayBuffer: async () => bytes.buffer.slice(0) } : null;
+  }
+  async delete(key) {
+    this.deleteCalls++;
+    this.objects.delete(key);
+  }
+}
+const originalPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=",
+  "base64",
+);
+function uploadRequest(record, bytes = originalPng) {
+  const form = new FormData();
+  form.set("file", new File([bytes], "source.png", { type: "image/png" }));
+  form.set("company_id", record.company_id);
+  form.set("record_id", record.id);
+  form.set("document_date", record.business_date);
+  return new Request("http://localhost/api/documents", { method: "POST", body: form });
+}
+
+test("a lost database response preserves evidence through approval, history, and download", async () => {
+  const { owner, review, db } = await fixture();
+  const bucket = new ObjectStore();
+  const draft = await create(owner, input({ title: "Original evidence recovery" }));
+  const batch = db.batch.bind(db);
+  let responseLost = false;
+  db.batch = async (statements) => {
+    const result = await batch(statements);
+    if (!responseLost && statements[0].sql.startsWith("INSERT INTO documents")) {
+      responseLost = true;
+      throw new Error("Response lost after commit");
+    }
+    return result;
+  };
+  const archived = await archiveDocument(uploadRequest(draft), owner, bucket);
+  assert.equal(responseLost, true);
+  assert.equal(bucket.deleteCalls, 0);
+  assert.equal((await owner.listDocuments(new URLSearchParams())).total, 1);
+  assert.equal((await owner.getRecord(draft.id)).document_count, 1);
+  const pending = await submit(owner, await owner.getRecord(draft.id));
+  await review.transition(pending.id, { action: "approve", version: pending.version });
+  const history = await review.listRecords(
+    new URLSearchParams({ q: "Original evidence recovery", status: "approved" }),
+  );
+  assert.equal(history.total, 1);
+  const detail = await review.detail(draft.id);
+  assert.equal(detail.documents[0].id, archived.id);
+  const { document, file } = await readArchivedDocument(archived.id, review, bucket);
+  const restored = Buffer.from(await file.arrayBuffer());
+  assert.deepEqual(restored, originalPng);
+  assert.equal(
+    document.sha256,
+    Buffer.from(await crypto.subtle.digest("SHA-256", restored)).toString("hex"),
+  );
+  const stranger = new RecordsService(db, {
+    userId: "stranger", email: "stranger@example.test", displayName: "No access",
+  });
+  await stranger.loadAccess();
+  const reads = bucket.getCalls;
+  await assert.rejects(() => readArchivedDocument(archived.id, stranger, bucket), /permission/);
+  assert.equal(bucket.getCalls, reads, "authorization must precede object retrieval");
+});
+
+test("an unavailable reconciliation read retains original bytes regardless of commit outcome", async () => {
+  for (const committed of [false, true]) {
+    const { owner, db } = await fixture();
+    const draft = await create(owner);
+    const bucket = new ObjectStore();
+    const batch = db.batch.bind(db), one = owner.one.bind(owner);
+    let failed = false;
+    db.batch = async (statements) => {
+      if (committed) await batch(statements);
+      failed = true;
+      throw new Error("Database response unavailable");
+    };
+    owner.one = async (...args) => {
+      if (failed) throw new Error("Reconciliation unavailable");
+      return one(...args);
+    };
+    await assert.rejects(
+      () => archiveDocument(uploadRequest(draft), owner, bucket),
+      /Check the document archive/,
+    );
+    assert.equal(bucket.deleteCalls, 0);
+    assert.equal(bucket.objects.size, 1);
+    assert.deepEqual(Buffer.from([...bucket.objects.values()][0]), originalPng);
+    assert.equal(db.sqlite.prepare("SELECT count(*) AS n FROM documents").get().n, committed ? 1 : 0);
+  }
+});
+
+test("a concurrent void preserves the upload conflict and never links or deletes evidence", async () => {
+  const { owner, review, db } = await fixture();
+  const approved = await approve(review, await submit(owner, await create(owner)));
+  const bucket = new ObjectStore(), batch = db.batch.bind(db);
+  db.batch = async (statements) => {
+    db.sqlite.prepare("UPDATE records SET status='voided',version=version+1 WHERE id=?").run(approved.id);
+    return batch(statements);
+  };
+  await assert.rejects(
+    () => archiveDocument(uploadRequest(approved), owner, bucket),
+    /evidence_scope_mismatch/,
+  );
+  assert.equal((await owner.getRecord(approved.id)).status, "voided");
+  assert.equal((await owner.getRecord(approved.id)).document_count, 0);
+  assert.equal((await owner.listDocuments(new URLSearchParams())).total, 0);
+  assert.equal(bucket.objects.size, 1);
+  assert.equal(bucket.deleteCalls, 0);
+});
+
+test("invalid file content and unauthorized uploads fail before object storage", async () => {
+  const { owner, db } = await fixture();
+  const draft = await create(owner), bucket = new ObjectStore();
+  await assert.rejects(
+    () => archiveDocument(uploadRequest(draft, Buffer.from("not an image")), owner, bucket),
+    /valid PDF, PNG, or JPG/,
+  );
+  const stranger = new RecordsService(db, {
+    userId: "stranger", email: "stranger@example.test", displayName: "No access",
+  });
+  await stranger.loadAccess();
+  await assert.rejects(() => archiveDocument(uploadRequest(draft), stranger, bucket), /permission/);
+  assert.equal(bucket.objects.size, 0);
+});
+
 let failures = 0;
 for (const { name, run } of tests) {
   try {

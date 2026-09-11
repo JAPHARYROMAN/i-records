@@ -17,6 +17,8 @@ The native database overview returned no available bindings or tables. Productio
 
 All three migrations pass locally, including the database integrity triggers. A difference in hosted SQL statement parsing is a possible cause, but the host has not identified the failed file or statement. No migration has been rewritten or removed and the failed archive has not been retried.
 
+On resuming recovery, the native database overview still exposed no bindings or tables and the Site still had no live URL. The signed-in Library search and account settings did not expose this unpublished Site's database viewer or migration ledger. The deployment service must provide the exact failed statement and applied ledger before a migration repair can be established safely. The application now also preserves original uploads when a database write succeeds but its response is lost; nineteen integration tests cover that recovery and the existing record workflows.
+
 ## Recovery
 
 1. Obtain the failed migration/statement and the applied migration ledger from the Sites deployment service or its database viewer. Preserve existing applied files and metadata.
