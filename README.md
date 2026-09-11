@@ -40,6 +40,8 @@ For Windows environments with a broken npm command shim, the app itself can stil
 
 ## Deployment
 
+The initial private deployment is blocked by a hosted migration error; no live deployment is verified. See [deployment status and recovery](docs/DEPLOYMENT-STATUS.md).
+
 The application builds a Cloudflare-compatible Worker with logical `DB` (D1) and `BUCKET` (R2) bindings declared in `.openai/hosting.json`. The Sites platform owns deployment resources, identity, and owner-private access. The GitHub repository remains the application's source repository.
 
 The first authenticated visitor initializes the workspace; keep the deployment owner-private until that initialization is complete. App roles and the hosting platform's audience settings are separate. Adding an access assignment does not send an invitation or change private site sharing.
